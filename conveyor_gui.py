@@ -6,6 +6,7 @@ import threading
 import time
 import json
 import queue
+from collections import defaultdict
 
 class ConveyorControlGUI:
     def __init__(self, root):
@@ -19,18 +20,26 @@ class ConveyorControlGUI:
         self.current_color = "NINGUNO"
         self.box_count = {"ROJO": 0, "VERDE": 0, "AZUL": 0, "OTRO": 0}
         self.total_count = 0
-        #self.conveyor_speed = 0
-        self.esp_status = 0  # 0=stop, 1=running, 2=error
+        self.detection_count = 0
+        self.conveyor_speed = 75
+        self.stm32_connected = False
+        self.esp_status = 0
+        self.last_detection_time = 0
+        
+        # Acumulador de datos en tiempo real (ahora acumulativo)
+        self.realtime_counts = defaultdict(int)  # Esto mantendrá los valores acumulados
+        self.realtime_detections = 0
+        self.last_update_time = time.time()
+        self.update_interval = 1.0
         
         # Configuración de comunicación TCP
-        self.tcp_host = "192.168.1.100"  # IP del ESP32
+        self.tcp_host = "192.168.4.1"  # IP del ESP32 en modo AP
         self.tcp_port = 8080
         self.socket = None
         
-        
         self.receive_thread = None
         self.data_queue = queue.Queue()
-        self.data_timer = None  # Timer para pedir datos automáticamente
+        self.data_timer = None
         
         # Crear widgets
         self.setup_gui()
@@ -38,6 +47,9 @@ class ConveyorControlGUI:
         # Iniciar thread para procesar datos recibidos
         self.process_thread = threading.Thread(target=self.process_received_data, daemon=True)
         self.process_thread.start()
+        
+        # Iniciar timer para acumulación de tiempo real
+        self.start_realtime_timer()
         
     def setup_gui(self):
         # Crear pestañas
@@ -67,16 +79,17 @@ class ConveyorControlGUI:
         status_frame = ttk.LabelFrame(self.tab_control_frame, text="Estado del Sistema", padding=10)
         status_frame.grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
         
-        # Indicadores de estado
-        self.connection_indicator = tk.Label(status_frame, text="DESCONECTADO", fg="#C33B80", font=("Arial", 12))
-        self.connection_indicator.grid(row=0, column=0, padx=20)
+        # Estado de conexiones
+        conn_frame = ttk.Frame(status_frame)
+        conn_frame.pack(pady=5)
         
-        #self.conveyor_indicator = tk.Label(status_frame, text="CINTA DETENIDA", fg="#C33B80", font=("Arial", 12))
-        #self.conveyor_indicator.grid(row=0, column=1, padx=20)
+        tk.Label(conn_frame, text="ESP32:", font=("Arial", 10), fg="#812E58").pack(side="left", padx=5)
+        self.esp_indicator = tk.Label(conn_frame, text="DESCONECTADO", fg="#C33B80", font=("Arial", 10, "bold"))
+        self.esp_indicator.pack(side="left", padx=20)
         
-        # Velocidad actual
-        #self.speed_indicator = tk.Label(status_frame, text="VELOCIDAD: 0%", fg="#812E58", font=("Arial", 12))
-        #self.speed_indicator.grid(row=0, column=2, padx=20)
+        tk.Label(conn_frame, text="STM32:", font=("Arial", 10), fg="#812E58").pack(side="left", padx=5)
+        self.stm32_indicator = tk.Label(conn_frame, text="DESCONECTADO", fg="#C33B80", font=("Arial", 10, "bold"))
+        self.stm32_indicator.pack(side="left", padx=20)
         
         # Marco izquierdo - Control y visualización
         left_frame = ttk.LabelFrame(self.tab_control_frame, text="Control y Visualización", padding=15)
@@ -101,53 +114,91 @@ class ConveyorControlGUI:
                                      state="disabled")
         self.stop_button.pack(side="left", padx=5)
         
-        #self.reset_button = tk.Button(control_frame, text="RESET CONTADORES", 
-        #                              command=self.reset_counters, 
-        #                              bg="#D691B4", fg="#F8EAF2", 
-        #                              font=("Arial", 12, "bold"),
-        #                              height=2, width=15)
-        #self.reset_button.pack(side="left", padx=5)
+        # Botón de reset
+        tk.Button(control_frame, text="RESETEAR CONTADORES", 
+                 command=self.reset_counters,
+                 bg="#C33B80", fg="#F8EAF2",
+                 font=("Arial", 10, "bold"),
+                 height=2, width=18).pack(side="left", padx=5)
         
-        # Botón para pedir datos manualmente
-        #self.get_data_button = tk.Button(control_frame, text="ACTUALIZAR DATOS", 
-        #                                 command=self.request_data, 
-        #                                 bg="#C33B80", fg="#F8EAF2", 
-        #                                 font=("Arial", 12, "bold"),
-        #                                 height=2, width=15)
-        #self.get_data_button.pack(side="left", padx=5)
+        # Indicador de detección
+        detection_frame = ttk.LabelFrame(left_frame, text="ESTADO DE DETECCIÓN", padding=10)
+        detection_frame.pack(pady=10, fill="x")
+        
+        self.detection_indicator = tk.Label(detection_frame, text="NO DETECTADO", 
+                                          font=("Arial", 14, "bold"), 
+                                          bg="#D691B4", width=20, height=2, fg="#F8EAF2")
+        self.detection_indicator.pack()
         
         # Indicador de color actual
         color_frame = ttk.LabelFrame(left_frame, text="COLOR DETECTADO", padding=10)
-        color_frame.pack(pady=20, fill="x")
+        color_frame.pack(pady=10, fill="x")
         
         self.color_display = tk.Label(color_frame, text=self.current_color, 
                                       font=("Arial", 24, "bold"), 
                                       bg="#D691B4", width=15, height=2, fg="#F8EAF2")
         self.color_display.pack()
         
-        # Marco de conteo en tiempo real
-        count_frame = tk.LabelFrame(left_frame, text="CONTEO EN TIEMPO REAL", 
+        # Marco de conteo en tiempo real (modificado para mostrar acumulados)
+        count_frame = tk.LabelFrame(left_frame, text="CONTEO EN TIEMPO REAL (Acumulado por intervalo)", 
                            fg="#812E58",
                            bg="#F0F0F0",
                            font=("Arial", 10, "bold"),
                            padx=10, pady=10)
         count_frame.pack(pady=20, fill="x")
         
-        self.count_labels = {}
+        # Contadores en tiempo real
+        self.realtime_labels = {}
         colors = ["ROJO", "VERDE", "AZUL", "OTRO"]
+        
+        # Detecciones en tiempo real
+        det_frame = ttk.Frame(count_frame)
+        det_frame.pack(fill="x", pady=2)
+        tk.Label(det_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
+        self.detection_realtime_label = tk.Label(det_frame, text="0", font=("Arial", 10))
+        self.detection_realtime_label.pack(side="left", padx=10)
+        
         for i, color in enumerate(colors):
             frame = ttk.Frame(count_frame)
-            frame.pack(fill="x", pady=5)
+            frame.pack(fill="x", pady=2)
             
             label = tk.Label(frame, text=f"{color}:", width=10, anchor="w", fg="#812E58")
             label.pack(side="left")
             
-            count_label = tk.Label(frame, text="0", font=("Arial", 12, "bold"))
+            count_label = tk.Label(frame, text="0", font=("Arial", 10))
+            count_label.pack(side="left", padx=10)
+            
+            self.realtime_labels[color] = count_label
+        
+        # Marco de conteo total acumulado
+        total_count_frame = tk.LabelFrame(left_frame, text="CONTEO TOTAL ACUMULADO", 
+                           fg="#812E58",
+                           bg="#F0F0F0",
+                           font=("Arial", 10, "bold"),
+                           padx=10, pady=10)
+        total_count_frame.pack(pady=20, fill="x")
+        
+        # Detecciones totales
+        det_total_frame = ttk.Frame(total_count_frame)
+        det_total_frame.pack(fill="x", pady=2)
+        tk.Label(det_total_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
+        self.detection_total_label = tk.Label(det_total_frame, text="0", font=("Arial", 10, "bold"))
+        self.detection_total_label.pack(side="left", padx=10)
+        
+        self.count_labels = {}
+        for i, color in enumerate(colors):
+            frame = ttk.Frame(total_count_frame)
+            frame.pack(fill="x", pady=2)
+            
+            label = tk.Label(frame, text=f"{color}:", width=10, anchor="w", fg="#812E58")
+            label.pack(side="left")
+            
+            count_label = tk.Label(frame, text="0", font=("Arial", 10, "bold"))
             count_label.pack(side="left", padx=10)
             
             self.count_labels[color] = count_label
         
-        total_frame = ttk.Frame(count_frame)
+        total_frame = ttk.Frame(total_count_frame)
         total_frame.pack(fill="x", pady=10)
         tk.Label(total_frame, text="TOTAL:", font=("Arial", 12, "bold"), fg="#812E58").pack(side="left")
         self.total_label = tk.Label(total_frame, text="0", font=("Arial", 14, "bold"), fg="#812E58")
@@ -165,7 +216,7 @@ class ConveyorControlGUI:
         self.leds = {}
         led_states = [
             ("Cinta", " CINTA DETENIDA", "#D691B4"),
-            ("Detección", "DETECCION INACTIVA", "#D691B4"),
+            ("Sensor", "SENSOR INACTIVO", "#D691B4"),
             ("Clasificación", "CLASIFICACION INACTIVA", "#D691B4"),
             ("Comunicación", "COMUNICACIÓN: DESCONECTADO", "#D691B4")
         ]
@@ -253,10 +304,10 @@ class ConveyorControlGUI:
         update_frame = ttk.LabelFrame(config_frame, text="Configuración de Actualización", padding=15)
         update_frame.pack(fill="x", pady=20)
         
-        #ttk.Label(update_frame, text="Intervalo de datos (ms):").grid(row=0, column=0, sticky="w", pady=5)
-        #self.update_interval = ttk.Spinbox(update_frame, from_=100, to=5000, width=10)
-        #self.update_interval.set(1000)
-        #self.update_interval.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        ttk.Label(update_frame, text="Intervalo de actualización (ms):").grid(row=0, column=0, sticky="w", pady=5)
+        self.interval_entry = ttk.Entry(update_frame, width=10)
+        self.interval_entry.grid(row=0, column=1, padx=10, pady=5)
+        self.interval_entry.insert(0, "1000")
         
         self.auto_update_var = tk.BooleanVar(value=True)
         self.auto_update_cb = tk.Checkbutton(update_frame, text="Actualización automática", 
@@ -264,6 +315,18 @@ class ConveyorControlGUI:
                                             command=self.toggle_auto_update,
                                             fg="#812E58")
         self.auto_update_cb.grid(row=1, column=0, columnspan=2, pady=5, sticky="w")
+        
+        # Botón de prueba STM32
+        stm32_frame = ttk.LabelFrame(config_frame, text="Prueba STM32", padding=15)
+        stm32_frame.pack(fill="x", pady=20)
+        
+        tk.Button(stm32_frame, text="Ping STM32", 
+                 command=self.ping_stm32,
+                 bg="#C33B80", fg="#F8EAF2").pack(side="left", padx=5)
+        
+        tk.Button(stm32_frame, text="Solicitar Estado", 
+                 command=self.get_status,
+                 bg="#D691B4", fg="#F8EAF2").pack(side="left", padx=5)
         
         # Botones de acción
         action_frame = ttk.Frame(config_frame)
@@ -324,7 +387,7 @@ class ConveyorControlGUI:
         self.tcp_port = port
         
         self.connect_button.config(state="normal", text="Desconectar", bg="#C33B80", fg="#F8EAF2")
-        self.connection_indicator.config(text=" CONECTADO", fg="#C33B80")
+        self.esp_indicator.config(text="CONECTADO", fg="#C33B80")
         self.update_led("Comunicación", "#C33B80", "CONECTADO")
         
         self.log_event("Comunicación", f"¡Conectado a ESP32 en {host}:{port}!")
@@ -337,12 +400,12 @@ class ConveyorControlGUI:
         if self.auto_update_var.get():
             self.start_auto_update()
         
-        # Pedir datos iniciales
-        self.request_data()
+        # Solicitar estado inicial
+        self.send_command("GET_STATUS")
     
     def _connection_failed(self, error_msg):
         self.connect_button.config(state="normal", text="Conectar", bg="#D691B4", fg="#F8EAF2")
-        self.connection_indicator.config(text="DESCONECTADO", fg="#C33B80")
+        self.esp_indicator.config(text="DESCONECTADO", fg="#C33B80")
         
         self.log_event("Errores", error_msg)
         messagebox.showerror("Error de Conexión", error_msg)
@@ -355,11 +418,13 @@ class ConveyorControlGUI:
             
             self.connected = False
             self.system_running = False
+            self.stm32_connected = False
             self.connect_button.config(text="Conectar", bg="#D691B4", fg="#F8EAF2")
-            self.connection_indicator.config(text="DESCONECTADO", fg="#C33B80")
-            self.conveyor_indicator.config(text="CINTA DETENIDA", fg="#C33B80")
+            self.esp_indicator.config(text="DESCONECTADO", fg="#C33B80")
+            self.stm32_indicator.config(text="DESCONECTADO", fg="#C33B80")
             self.update_led("Comunicación", "#D691B4", "DESCONECTADO")
             self.update_led("Cinta", "#D691B4", "DETENIDA")
+            self.update_led("Sensor", "#D691B4", "SENSOR INACTIVO")
             
             self.log_event("Comunicación", "Desconectado de ESP32")
             self.update_info_text("Desconectado de ESP32\n")
@@ -438,81 +503,255 @@ class ConveyorControlGUI:
                 json_data = json.loads(data)
                 self.process_json_data(json_data)
             else:
-                self.log_event("Comunicación", f"Mensaje ESP32: {data}")
+                # Procesar mensaje de DETECCIÓN
+                if "DETECTADO" in data:
+                    self.process_detection()
+                    self.log_event("Detección", "Objeto detectado")
+                # Procesar mensaje directo de color
+                elif "Color:" in data:
+                    color = data.split(":")[1].strip()
+                    self.accumulate_realtime_count(color)
+                    self.log_event("Color", f"Color detectado: {color}")
+                else:
+                    self.log_event("Comunicación", f"Mensaje ESP32: {data}")
                 
         except json.JSONDecodeError:
-            self.log_event("Comunicación", f"Datos recibidos: {data}")
+            # Procesar mensaje directo
+            if "DETECTADO" in data:
+                self.process_detection()
+                self.log_event("Detección", "Objeto detectado")
+            elif "Color:" in data:
+                color = data.split(":")[1].strip()
+                self.accumulate_realtime_count(color)
+                self.log_event("Color", f"Color detectado: {color}")
+            else:
+                self.log_event("Comunicación", f"Datos recibidos: {data}")
         except Exception as e:
             self.log_event("Errores", f"Error procesando datos ESP32: {str(e)}")
+    
+    def process_detection(self):
+        """Procesa una detección de objeto"""
+        self.detection_count += 1
+        self.realtime_detections += 1
+        self.last_detection_time = time.time()
+        
+        # Actualizar indicador visual
+        self.detection_indicator.config(text="OBJETO DETECTADO", bg="#C33B80", fg="#F8EAF2")
+        self.update_led("Sensor", "#C33B80", "SENSOR ACTIVO")
+        
+        # Programar regreso a estado normal después de 500ms
+        self.root.after(500, self.reset_detection_indicator)
+        
+        # Actualizar etiquetas
+        self.detection_total_label.config(text=str(self.detection_count))
+        
+        # Actualizar LED de detección si el sistema está corriendo
+        if self.system_running:
+            self.update_led("Sensor", "#C33B80", "SENSOR ACTIVO")
+    
+    def reset_detection_indicator(self):
+        """Regresa el indicador de detección a estado normal"""
+        self.detection_indicator.config(text="NO DETECTADO", bg="#D691B4", fg="#F8EAF2")
+    
+    def accumulate_realtime_count(self, color):
+        """Acumula conteo en tiempo real (acumulativo)"""
+        if color in self.realtime_counts:
+            self.realtime_counts[color] += 1
+        else:
+            self.realtime_counts[color] = 1
+        
+        # Contar siempre (sin verificar tiempo)
+        if color in self.box_count:
+            self.box_count[color] += 1
+            self.total_count += 1
+            self.update_counters()
+            self.update_color_display(color)
+            self.log_event("Conteo", f"Caja {color} contada (Total: {self.total_count})")
+    
+    def start_realtime_timer(self):
+        """Inicia el timer para actualizar contadores en tiempo real cada 1 segundo"""
+        self.root.after(100, self._update_realtime_counts)
+    
+    def _update_realtime_counts(self):
+        """Actualiza contadores en tiempo real SIN resetearlos"""
+        try:
+            # Actualizar etiquetas de tiempo real con valores acumulados
+            self.detection_realtime_label.config(text=str(self.realtime_detections))
+            
+            for color in ["ROJO", "VERDE", "AZUL", "OTRO"]:
+                count = self.realtime_counts.get(color, 0)
+                self.realtime_labels[color].config(text=str(count))
+            
+            # NO resetear conteos - mantener acumulado
+            # Los valores se mantienen acumulados hasta que se reseteen manualmente
+            
+            # Programar próxima actualización
+            self.root.after(1000, self._update_realtime_counts)
+            
+        except Exception as e:
+            self.log_event("Errores", f"Error actualizando contadores tiempo real: {str(e)}")
+            self.root.after(1000, self._update_realtime_counts)
     
     def process_json_data(self, json_data):
         msg_type = json_data.get("type", "")
         
         if msg_type == "init":
-            self.log_event("Comunicación", f"ESP32: {json_data.get('message', 'Listo')}")
-            self.update_info_text(f"ESP32 inicializado\nModo FAKE activado\n")
+            stm32_status = json_data.get("stm32", 0)
+            speed = json_data.get("speed", 75)
+            status = json_data.get("status", 0)
+            detections = json_data.get("detections", 0)
             
-        elif msg_type == "data" or msg_type == "sensor_data":
-            # Actualizar contadores
+            self.stm32_connected = stm32_status == 1
+            self.conveyor_speed = speed
+            self.esp_status = status
+            self.detection_count = detections
+            
+            self.update_stm32_indicator()
+            self.detection_total_label.config(text=str(self.detection_count))
+            
+            self.log_event("Comunicación", f"ESP32: Inicializado - STM32: {'Conectado' if stm32_status else 'Desconectado'}")
+            self.update_info_text(f"ESP32 inicializado\nSTM32: {'Conectado' if stm32_status else 'Desconectado'}\n")
+            
+        elif msg_type == "data":
             red = json_data.get("red", 0)
             green = json_data.get("green", 0)
             blue = json_data.get("blue", 0)
             other = json_data.get("other", 0)
             total = json_data.get("total", 0)
+            last_color = json_data.get("color", "NINGUNO")
+            detections = json_data.get("detections", 0)
             
+            # Usar los valores directamente del ESP32
             self.box_count["ROJO"] = red
             self.box_count["VERDE"] = green
             self.box_count["AZUL"] = blue
             self.box_count["OTRO"] = other
             self.total_count = total
+            self.detection_count = detections
             
-            # Actualizar GUI
             self.update_counters()
-            
-            # Actualizar color actual
-            last_color = json_data.get("last_color", "NINGUNO")
             self.update_color_display(last_color)
+            self.detection_total_label.config(text=str(self.detection_count))
             
-            # Actualizar velocidad
-            #speed = json_data.get("speed", 0)
-            #self.conveyor_speed = speed
-            #self.speed_indicator.config(text=f"VELOCIDAD: {speed}%")
+            # Actualizar contadores en tiempo real con los valores acumulados
+            self.realtime_counts["ROJO"] = red
+            self.realtime_counts["VERDE"] = green
+            self.realtime_counts["AZUL"] = blue
+            self.realtime_counts["OTRO"] = other
+            self.realtime_detections = detections
             
-            # Actualizar estado
+            # Actualizar etiquetas de tiempo real
+            self._update_realtime_display()
+            
+        elif msg_type == "update":
+            red = json_data.get("red", 0)
+            green = json_data.get("green", 0)
+            blue = json_data.get("blue", 0)
+            other = json_data.get("other", 0)
+            total = json_data.get("total", 0)
+            last_color = json_data.get("last_color", "NINGUNO")
+            speed = json_data.get("speed", 75)
             status = json_data.get("status", 0)
-            self.esp_status = status
+            detections = json_data.get("detections", 0)
             
-            # Actualizar LEDs según estado
-            if status == 1:  # RUNNING
+            # Usar los valores directamente del ESP32
+            self.box_count["ROJO"] = red
+            self.box_count["VERDE"] = green
+            self.box_count["AZUL"] = blue
+            self.box_count["OTRO"] = other
+            self.total_count = total
+            self.conveyor_speed = speed
+            self.esp_status = status
+            self.detection_count = detections
+            
+            self.update_counters()
+            self.update_color_display(last_color)
+            self.detection_total_label.config(text=str(self.detection_count))
+            
+            # Actualizar contadores en tiempo real
+            self.realtime_counts["ROJO"] = red
+            self.realtime_counts["VERDE"] = green
+            self.realtime_counts["AZUL"] = blue
+            self.realtime_counts["OTRO"] = other
+            self.realtime_detections = detections
+            
+            # Actualizar etiquetas de tiempo real
+            self._update_realtime_display()
+            
+            if status == 1:
                 self.update_led("Cinta", "#C33B80", "CINTA EN MOVIMIENTO")
-                self.update_led("Detección", "#C33B80", "DETECCIÓN ACTIVA")
+                self.update_led("Sensor", "#C33B80", "SENSOR ACTIVO")
                 self.update_led("Clasificación", "#C33B80", "CLASIFICACIÓN ACTIVA")
-            elif status == 0:  # STOPPED
+            elif status == 0:
                 self.update_led("Cinta", "#D691B4", "CINTA DETENIDA")
-                self.update_led("Detección", "#D691B4", "DETECCION INACTIVA")
+                self.update_led("Sensor", "#D691B4", "SENSOR INACTIVO")
                 self.update_led("Clasificación", "#D691B4", "CLASIFICACIÓN INACTIVA")
             
-            # Log
-            self.log_event("Datos", 
-                f"ROJO:{red} VERDE:{green} AZUL:{blue} OTRO:{other} TOTAL:{total}")
+        elif msg_type == "status":
+            speed = json_data.get("speed", 75)
+            stm32 = json_data.get("stm32", 0)
+            detections = json_data.get("detections", 0)
             
-        elif msg_type == "start_ack":
-            self.log_event("Sistema", json_data.get("message", "Sistema iniciado"))
-            self.conveyor_indicator.config(text="CINTA EN MOVIMIENTO", fg="#C33B80")
-            self.update_info_text("Sistema iniciado\nGenerando datos fake...\n")
+            self.conveyor_speed = speed
+            self.stm32_connected = stm32 == 1
+            self.detection_count = detections
             
-        elif msg_type == "stop_ack":
-            self.log_event("Sistema", json_data.get("message", "Sistema detenido"))
-            self.conveyor_indicator.config(text="CINTA DETENIDA", fg="#C33B80")
-            self.update_info_text("Sistema detenido\n")
+            self.update_stm32_indicator()
+            self.detection_total_label.config(text=str(self.detection_count))
             
-        elif msg_type == "reset_ack":
-            self.log_event("Sistema", json_data.get("message", "Contadores reseteados"))
+        elif msg_type == "ok":
+            cmd = json_data.get("cmd", "")
+            if cmd == "start":
+                self.system_running = True
+                self.start_button.config(state="disabled", bg="#812E58")
+                self.stop_button.config(state="normal", bg="#C33B80")
+                self.update_led("Sensor", "#C33B80", "SENSOR ACTIVO")
+                self.log_event("Sistema", "Sistema iniciado")
+                self.update_info_text("Sistema iniciado\n")
+            elif cmd == "stop":
+                self.system_running = False
+                self.start_button.config(state="normal", bg="#D691B4")
+                self.stop_button.config(state="disabled", bg="#D691B4")
+                self.update_led("Sensor", "#D691B4", "SENSOR INACTIVO")
+                self.log_event("Sistema", "Sistema detenido")
+                self.update_info_text("Sistema detenido\n")
+            elif cmd == "reset":
+                # Resetear contadores locales
+                for color in self.box_count:
+                    self.box_count[color] = 0
+                self.total_count = 0
+                self.detection_count = 0
+                
+                # Resetear contadores en tiempo real también
+                self.realtime_counts.clear()
+                self.realtime_detections = 0
+                
+                self.update_counters()
+                self.update_color_display("NINGUNO")
+                self.detection_total_label.config(text="0")
+                self._update_realtime_display()  # Actualizar display de tiempo real
+                self.log_event("Sistema", "Contadores reseteados")
+                self.update_info_text("Contadores reseteados\n")
+                
+        elif msg_type == "alert":
+            msg = json_data.get("msg", "")
+            self.log_event("Alerta", msg)
+            self.update_alarm_text(f"{msg}\n")
+            
+        elif msg_type == "ping_sent":
+            self.log_event("Comunicación", "Ping enviado a STM32")
             
         elif msg_type == "error":
-            error_msg = json_data.get("message", "Error desconocido")
-            self.log_event("Errores", f"ESP32: {error_msg}")
+            error_msg = json_data.get("msg", "Error desconocido")
+            self.log_event("Errores", f"Error: {error_msg}")
             self.update_alarm_text(f"Error: {error_msg}\n")
+    
+    def _update_realtime_display(self):
+        """Actualiza las etiquetas de tiempo real inmediatamente"""
+        self.detection_realtime_label.config(text=str(self.realtime_detections))
+        for color in ["ROJO", "VERDE", "AZUL", "OTRO"]:
+            count = self.realtime_counts.get(color, 0)
+            self.realtime_labels[color].config(text=str(count))
     
     # ========== ENVÍO DE COMANDOS ==========
     
@@ -528,6 +767,14 @@ class ConveyorControlGUI:
     def request_data(self):
         if self.connected:
             self.send_command("GET_DATA")
+    
+    def get_status(self):
+        if self.connected:
+            self.send_command("GET_STATUS")
+    
+    def ping_stm32(self):
+        if self.connected:
+            self.send_command("PING_STM32")
     
     def start_system(self):
         if not self.connected:
@@ -546,17 +793,48 @@ class ConveyorControlGUI:
         self.start_button.config(state="normal", bg="#D691B4")
         self.stop_button.config(state="disabled", bg="#D691B4")
     
+    def reset_counters(self):
+        if self.connected:
+            self.send_command("RESET_COUNTERS")
+        else:
+            # Reset local
+            for color in self.box_count:
+                self.box_count[color] = 0
+            self.total_count = 0
+            self.detection_count = 0
+            
+            # Resetear contadores en tiempo real también
+            self.realtime_counts.clear()
+            self.realtime_detections = 0
+            
+            self.update_counters()
+            self.update_color_display("NINGUNO")
+            self.detection_total_label.config(text="0")
+            self._update_realtime_display()  # Actualizar display de tiempo real
+            self.detection_indicator.config(text="NO DETECTADO", bg="#D691B4")
+            self.log_event("Sistema", "Contadores y detecciones reseteados localmente")
+    
     # ========== ACTUALIZACIÓN AUTOMÁTICA ==========
     
     def start_auto_update(self):
         if self.connected and self.auto_update_var.get():
-            interval = int(self.update_interval.get())
+            try:
+                interval = int(self.interval_entry.get())
+            except ValueError:
+                interval = 1000
+                
+            interval = max(100, interval)  # Mínimo 100ms
             self.data_timer = self.root.after(interval, self._auto_update)
     
     def _auto_update(self):
         if self.connected and self.auto_update_var.get():
             self.request_data()
-            interval = int(self.update_interval.get())
+            try:
+                interval = int(self.interval_entry.get())
+            except ValueError:
+                interval = 1000
+                
+            interval = max(100, interval)
             self.data_timer = self.root.after(interval, self._auto_update)
     
     def stop_auto_update(self):
@@ -576,16 +854,17 @@ class ConveyorControlGUI:
         for color in self.box_count:
             self.count_labels[color].config(text=str(self.box_count[color]))
         self.total_label.config(text=str(self.total_count))
+        self.detection_total_label.config(text=str(self.detection_count))
     
     def update_color_display(self, color):
         self.current_color = color
         self.color_display.config(text=color)
         
         color_map = {
-            "ROJO": "#D691B4",
-            "VERDE": "#D691B4",
-            "AZUL": "#D691B4",
-            "OTRO": "#D691B4",
+            "ROJO": "#C33B80",
+            "VERDE": "#C33B80", 
+            "AZUL": "#C33B80",
+            "OTRO": "#C33B80",
             "NINGUNO": "#D691B4"
         }
         
@@ -596,6 +875,12 @@ class ConveyorControlGUI:
         
         if color != "NINGUNO":
             self.log_event("Detecciones", f"Color detectado: {color}")
+    
+    def update_stm32_indicator(self):
+        if self.stm32_connected:
+            self.stm32_indicator.config(text="CONECTADO", fg="#C33B80")
+        else:
+            self.stm32_indicator.config(text="DESCONECTADO", fg="#C33B80")
     
     def update_led(self, led_name, color, text):
         if led_name in self.leds:
@@ -629,18 +914,6 @@ class ConveyorControlGUI:
             self.update_alarm_text(f"{message}\n")
     
     # ========== FUNCIONES ADICIONALES ==========
-    
-    def reset_counters(self):
-        if self.connected:
-            self.send_command("RESET_COUNTERS")
-        
-        for color in self.box_count:
-            self.box_count[color] = 0
-            self.count_labels[color].config(text="0")
-        
-        self.total_count = 0
-        self.total_label.config(text="0")
-        self.log_event("Sistema", "Contadores reseteados localmente")
     
     def clear_logs(self):
         self.log_text.config(state="normal")
@@ -688,8 +961,8 @@ class ConveyorControlGUI:
             config = {
                 "tcp_host": self.ip_entry.get(),
                 "tcp_port": int(self.port_entry.get()),
-                "update_interval": int(self.update_interval.get()),
-                "auto_update": self.auto_update_var.get()
+                "auto_update": self.auto_update_var.get(),
+                "update_interval": self.interval_entry.get()
             }
             
             with open("config.json", "w") as f:
@@ -707,13 +980,13 @@ class ConveyorControlGUI:
                 config = json.load(f)
             
             self.ip_entry.delete(0, tk.END)
-            self.ip_entry.insert(0, config.get("tcp_host", "10.179.36.130"))
+            self.ip_entry.insert(0, config.get("tcp_host", "192.168.4.1"))
             
             self.port_entry.delete(0, tk.END)
             self.port_entry.insert(0, str(config.get("tcp_port", 8080)))
             
-            self.update_interval.delete(0, tk.END)
-            self.update_interval.insert(0, str(config.get("update_interval", 1000)))
+            self.interval_entry.delete(0, tk.END)
+            self.interval_entry.insert(0, str(config.get("update_interval", "1000")))
             
             self.auto_update_var.set(config.get("auto_update", True))
             
@@ -756,6 +1029,7 @@ def main():
     system_menu.add_command(label="Resetear Contadores", command=app.reset_counters)
     system_menu.add_separator()
     system_menu.add_command(label="Actualizar Datos", command=app.request_data)
+    system_menu.add_command(label="Obtener Estado", command=app.get_status)
     
     root.mainloop()
 
