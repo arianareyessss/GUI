@@ -155,23 +155,23 @@ class ConveyorControlGUI:
         colors = ["ROJO", "VERDE", "AZUL", "OTRO"]
         
         # Detecciones en tiempo real
-        det_frame = ttk.Frame(count_frame)
-        det_frame.pack(fill="x", pady=2)
-        tk.Label(det_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
-        self.detection_realtime_label = tk.Label(det_frame, text="0", font=("Arial", 10))
-        self.detection_realtime_label.pack(side="left", padx=10)
+        #det_frame = ttk.Frame(count_frame)
+        #det_frame.pack(fill="x", pady=2)
+        #tk.Label(det_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
+        #self.detection_realtime_label = tk.Label(det_frame, text="0", font=("Arial", 10))
+        #self.detection_realtime_label.pack(side="left", padx=10)
         
-        for i, color in enumerate(colors):
-            frame = ttk.Frame(count_frame)
-            frame.pack(fill="x", pady=2)
+        ##for i, color in enumerate(colors):
+           # frame = ttk.Frame(count_frame)
+           # frame.pack(fill="x", pady=2)
             
-            label = tk.Label(frame, text=f"{color}:", width=10, anchor="w", fg="#812E58")
-            label.pack(side="left")
+           # label = tk.Label(frame, text=f"{color}:", width=10, anchor="w", fg="#812E58")
+           # label.pack(side="left")
             
-            count_label = tk.Label(frame, text="0", font=("Arial", 10))
-            count_label.pack(side="left", padx=10)
+           # count_label = tk.Label(frame, text="0", font=("Arial", 10))
+           # count_label.pack(side="left", padx=10)
             
-            self.realtime_labels[color] = count_label
+           # self.realtime_labels[color] = count_label
         
         # Marco de conteo total acumulado
         total_count_frame = tk.LabelFrame(left_frame, text="CONTEO TOTAL ACUMULADO", 
@@ -182,11 +182,11 @@ class ConveyorControlGUI:
         total_count_frame.pack(pady=20, fill="x")
         
         # Detecciones totales
-        det_total_frame = ttk.Frame(total_count_frame)
-        det_total_frame.pack(fill="x", pady=2)
-        tk.Label(det_total_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
-        self.detection_total_label = tk.Label(det_total_frame, text="0", font=("Arial", 10, "bold"))
-        self.detection_total_label.pack(side="left", padx=10)
+        #det_total_frame = ttk.Frame(total_count_frame)
+        #det_total_frame.pack(fill="x", pady=2)
+        #tk.Label(det_total_frame, text="DETECCIONES:", width=12, anchor="w", fg="#812E58").pack(side="left")
+        #self.detection_total_label = tk.Label(det_total_frame, text="0", font=("Arial", 10, "bold"))
+        #self.detection_total_label.pack(side="left", padx=10)
         
         self.count_labels = {}
         for i, color in enumerate(colors):
@@ -201,11 +201,11 @@ class ConveyorControlGUI:
             
             self.count_labels[color] = count_label
         
-        total_frame = ttk.Frame(total_count_frame)
-        total_frame.pack(fill="x", pady=10)
-        tk.Label(total_frame, text="TOTAL:", font=("Arial", 12, "bold"), fg="#812E58").pack(side="left")
-        self.total_label = tk.Label(total_frame, text="0", font=("Arial", 14, "bold"), fg="#812E58")
-        self.total_label.pack(side="left", padx=10)
+        #total_frame = ttk.Frame(total_count_frame)
+        #total_frame.pack(fill="x", pady=10)
+        #tk.Label(total_frame, text="TOTAL:", font=("Arial", 12, "bold"), fg="#812E58").pack(side="left")
+        #self.total_label = tk.Label(total_frame, text="0", font=("Arial", 14, "bold"), fg="#812E58")
+        #self.total_label.pack(side="left", padx=10)
         
         # Marco derecho - Alertas y monitoreo
         right_frame = ttk.LabelFrame(self.tab_control_frame, text="Alertas y Monitoreo", padding=15)
@@ -777,9 +777,9 @@ class ConveyorControlGUI:
                 "ROJO": self.box_count["ROJO"],
                 "VERDE": self.box_count["VERDE"],
                 "AZUL": self.box_count["AZUL"],
-                "OTRO": self.box_count["OTRO"],
-                "TOTAL": self.total_count,
-                "DETECCIONES": self.detection_count
+                #"OTRO": self.box_count["OTRO"],
+                #"TOTAL": self.total_count,
+                #"DETECCIONES": self.detection_count
             }
         }
         self.count_history.append(count_entry)
