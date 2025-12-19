@@ -99,12 +99,12 @@ class ConveyorControlGUI:
                                      state="disabled")
         self.stop_button.pack(side="left", padx=5)
         
-        self.reset_button = tk.Button(control_frame, text="RESET CONTADORES", 
-                                      command=self.reset_counters, 
-                                      bg="#D691B4", fg="#F8EAF2", 
-                                      font=("Arial", 12, "bold"),
-                                      height=2, width=15)
-        self.reset_button.pack(side="left", padx=5)
+        #self.reset_button = tk.Button(control_frame, text="RESET CONTADORES", 
+        #                              command=self.reset_counters, 
+        #                              bg="#D691B4", fg="#F8EAF2", 
+        #                              font=("Arial", 12, "bold"),
+        #                              height=2, width=15)
+        #self.reset_button.pack(side="left", padx=5)
         
         # Botón para pedir datos manualmente
         #self.get_data_button = tk.Button(control_frame, text="ACTUALIZAR DATOS", 
