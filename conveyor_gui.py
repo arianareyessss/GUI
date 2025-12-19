@@ -26,6 +26,9 @@ class ConveyorControlGUI:
         self.esp_status = 0
         self.last_detection_time = 0
         
+        # Historial de conteos para exportación
+        self.count_history = []  # Lista para almacenar historial de conteos
+        
         # Acumulador de datos en tiempo real (ahora acumulativo)
         self.realtime_counts = defaultdict(int)  # Esto mantendrá los valores acumulados
         self.realtime_detections = 0
@@ -274,6 +277,8 @@ class ConveyorControlGUI:
                  bg="#D691B4", fg="#F8EAF2").pack(side="left", padx=5)
         tk.Button(toolbar, text="Exportar Logs", command=self.export_logs,
                  bg="#D691B4", fg="#F8EAF2").pack(side="left", padx=5)
+        tk.Button(toolbar, text="Exportar Datos de Conteo", command=self.export_count_data,
+                 bg="#C33B80", fg="#F8EAF2").pack(side="left", padx=5)
         tk.Button(toolbar, text="Buscar Error", command=self.search_errors,
                  bg="#D691B4", fg="#F8EAF2").pack(side="left", padx=5)
         
@@ -566,6 +571,10 @@ class ConveyorControlGUI:
             self.total_count += 1
             self.update_counters()
             self.update_color_display(color)
+            
+            # Registrar en el historial de conteos
+            self.log_count_event(color)
+            
             self.log_event("Conteo", f"Caja {color} contada (Total: {self.total_count})")
     
     def start_realtime_timer(self):
@@ -726,6 +735,9 @@ class ConveyorControlGUI:
                 self.realtime_counts.clear()
                 self.realtime_detections = 0
                 
+                # Resetear historial
+                self.count_history = []
+                
                 self.update_counters()
                 self.update_color_display("NINGUNO")
                 self.detection_total_label.config(text="0")
@@ -752,6 +764,25 @@ class ConveyorControlGUI:
         for color in ["ROJO", "VERDE", "AZUL", "OTRO"]:
             count = self.realtime_counts.get(color, 0)
             self.realtime_labels[color].config(text=str(count))
+    
+    # ========== REGISTRO DE CONTEO EN LOGS ==========
+    
+    def log_count_event(self, color):
+        """Registra un evento de conteo en el historial"""
+        timestamp = datetime.now()
+        count_entry = {
+            "timestamp": timestamp,
+            "color": color,
+            "counts": {
+                "ROJO": self.box_count["ROJO"],
+                "VERDE": self.box_count["VERDE"],
+                "AZUL": self.box_count["AZUL"],
+                "OTRO": self.box_count["OTRO"],
+                "TOTAL": self.total_count,
+                "DETECCIONES": self.detection_count
+            }
+        }
+        self.count_history.append(count_entry)
     
     # ========== ENVÍO DE COMANDOS ==========
     
@@ -806,6 +837,9 @@ class ConveyorControlGUI:
             # Resetear contadores en tiempo real también
             self.realtime_counts.clear()
             self.realtime_detections = 0
+            
+            # Resetear historial
+            self.count_history = []
             
             self.update_counters()
             self.update_color_display("NINGUNO")
@@ -935,6 +969,49 @@ class ConveyorControlGUI:
         except Exception as e:
             self.log_event("Errores", f"Error exportando logs: {str(e)}")
     
+    def export_count_data(self):
+        """Exporta los datos de conteo en formato CSV"""
+        try:
+            if not self.count_history:
+                messagebox.showinfo("Sin Datos", "No hay datos de conteo para exportar.")
+                return
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"conteo_datos_{timestamp}.csv"
+            
+            with open(filename, "w", encoding='utf-8') as f:
+                # Escribir encabezados
+                f.write("FECHA_HORA,COLOR,ROJO,VERDE,AZUL,OTRO,TOTAL,DETECCIONES\n")
+                
+                # Escribir datos
+                for entry in self.count_history:
+                    ts = entry["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                    color = entry["color"]
+                    counts = entry["counts"]
+                    
+                    f.write(f"{ts},{color},{counts['ROJO']},{counts['VERDE']},{counts['AZUL']},{counts['OTRO']},{counts['TOTAL']},{counts['DETECCIONES']}\n")
+            
+            # Exportar también un resumen final
+            summary_filename = f"conteo_resumen_{timestamp}.txt"
+            with open(summary_filename, "w", encoding='utf-8') as f:
+                f.write("=== RESUMEN FINAL DE CONTEO ===\n")
+                f.write(f"Fecha y hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 40 + "\n")
+                f.write(f"Rojo: {self.box_count['ROJO']}\n")
+                f.write(f"Verde: {self.box_count['VERDE']}\n")
+                f.write(f"Azul: {self.box_count['AZUL']}\n")
+                f.write(f"Otro: {self.box_count['OTRO']}\n")
+                f.write(f"Total: {self.total_count}\n")
+                f.write(f"Detecciones: {self.detection_count}\n")
+                f.write("=" * 40 + "\n")
+            
+            self.log_event("Exportación", f"Datos de conteo exportados a {filename} y {summary_filename}")
+            messagebox.showinfo("Éxito", f"Datos exportados:\n{filename}\n{summary_filename}")
+            
+        except Exception as e:
+            self.log_event("Errores", f"Error exportando datos de conteo: {str(e)}")
+            messagebox.showerror("Error", f"Error exportando datos: {str(e)}")
+    
     def search_errors(self):
         logs = self.log_text.get("1.0", "end")
         error_count = logs.upper().count("ERROR")
@@ -1015,6 +1092,7 @@ def main():
     file_menu = tk.Menu(menubar, tearoff=0, bg="#F8DAEB", fg="#C33B80")
     menubar.add_cascade(label="Archivo", menu=file_menu)
     file_menu.add_command(label="Exportar Logs", command=app.export_logs)
+    file_menu.add_command(label="Exportar Datos de Conteo", command=app.export_count_data)
     file_menu.add_command(label="Guardar Configuración", command=app.save_config)
     file_menu.add_separator()
     file_menu.add_command(label="Salir", command=app.on_closing)
