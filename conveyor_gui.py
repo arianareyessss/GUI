@@ -26,6 +26,8 @@ class ConveyorControlGUI:
         self.tcp_host = "192.168.1.100"  # IP del ESP32
         self.tcp_port = 8080
         self.socket = None
+        
+        
         self.receive_thread = None
         self.data_queue = queue.Queue()
         self.data_timer = None  # Timer para pedir datos automáticamente
